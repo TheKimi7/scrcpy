@@ -6,7 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+# include <windows.h>
+#else
 # include <poll.h>
 # include <unistd.h>
 #endif
@@ -30,16 +32,98 @@ sc_prompt_read_line(struct sc_intr *intr, char *buf, size_t size);
 
 bool
 sc_prompt_is_available(void) {
-    // Not implemented on Windows
-    return false;
+    // GetConsoleMode() fails on anything which is not a console, so it also
+    // covers redirections and a scrcpy started without any console attached
+    DWORD mode;
+    return GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode)
+        && GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &mode);
+}
+
+/**
+ * Discard the pending console events which are not a key press
+ *
+ * Waiting on the console input handle wakes up on any input record, including
+ * key releases, mouse moves and focus changes. Remove them from the queue so
+ * that waiting does not spin, and so that the blocking read below is only
+ * started once the user actually typed something.
+ *
+ * Return true if a key press is pending.
+ */
+static bool
+sc_prompt_skip_non_key_events(HANDLE input) {
+    for (;;) {
+        INPUT_RECORD record;
+        DWORD count;
+        if (!PeekConsoleInput(input, &record, 1, &count) || !count) {
+            return false;
+        }
+
+        if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
+            return true;
+        }
+
+        if (!ReadConsoleInput(input, &record, 1, &count)) {
+            return false;
+        }
+    }
 }
 
 static bool
 sc_prompt_read_line(struct sc_intr *intr, char *buf, size_t size) {
-    (void) intr;
-    (void) buf;
-    (void) size;
-    return false;
+    assert(size > 0);
+
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    size_t len = 0;
+
+    for (;;) {
+        if (intr && sc_intr_is_interrupted(intr)) {
+            return false;
+        }
+
+        DWORD result = WaitForSingleObject(input, 100);
+        if (result == WAIT_TIMEOUT) {
+            // Re-check the interruptor
+            continue;
+        }
+
+        if (result != WAIT_OBJECT_0) {
+            return false;
+        }
+
+        if (!sc_prompt_skip_non_key_events(input)) {
+            continue;
+        }
+
+        // A key press is pending. The console echoes the characters and
+        // handles line editing, and returns the whole line at once, so this
+        // blocks until the user presses Enter.
+        DWORD r;
+        if (!ReadFile(input, buf + len, (DWORD) (size - len - 1), &r,
+                      NULL)) {
+            return false;
+        }
+
+        if (!r) {
+            // EOF (Ctrl+Z then Enter)
+            return false;
+        }
+
+        len += r;
+        buf[len] = '\0';
+
+        char *newline = memchr(buf, '\n', len);
+        if (newline) {
+            // Ignore anything typed after the end of the line
+            *newline = '\0';
+            return true;
+        }
+
+        if (len == size - 1) {
+            // The line does not fit: return it truncated, it will be rejected
+            // as an invalid answer
+            return true;
+        }
+    }
 }
 
 #else
