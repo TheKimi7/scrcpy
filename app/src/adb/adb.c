@@ -1,16 +1,10 @@
 #include "adb.h"
 
 #include <assert.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-
-#ifndef _WIN32
-# include <poll.h>
-# include <unistd.h>
-#endif
 
 #include "adb/adb_device.h"
 #include "adb/adb_parser.h"
@@ -18,6 +12,7 @@
 #include "util/file.h"
 #include "util/log.h"
 #include "util/process_intr.h"
+#include "util/prompt.h"
 #include "util/str.h"
 
 /* Convenience macro to expand:
@@ -610,122 +605,11 @@ sc_adb_log_multiple(enum sc_log_level level,
  * When several devices match the selector and the standard input is a
  * terminal, prompt the user to pick one instead of failing.
  */
-
-#ifdef _WIN32
-
-static bool
-sc_adb_can_prompt(void) {
-    // Not implemented on Windows
-    return false;
-}
-
-static bool
-sc_adb_prompt_device(struct sc_intr *intr, struct sc_adb_device *devices,
-                     size_t count, size_t *idx_out) {
-    (void) intr;
-    (void) devices;
-    (void) count;
-    (void) idx_out;
-    return false;
-}
-
-#else
-
-static bool
-sc_adb_can_prompt(void) {
-    // Only prompt when both stdin and stderr are attached to a terminal: the
-    // question is printed on stderr (like the logs), and the answer is read
-    // from stdin
-    if (!isatty(STDIN_FILENO) || !isatty(STDERR_FILENO)) {
-        return false;
-    }
-
-    // A background job (scrcpy &) still has a terminal on stdin, but it may
-    // not read from it: the user types into the shell, and reading would
-    // raise SIGTTIN. Only prompt from the foreground process group.
-    return tcgetpgrp(STDIN_FILENO) == getpgrp();
-}
-
-/**
- * Read one line from stdin, interruptible
- *
- * Wait for stdin to become readable, but wake up regularly to check if the
- * interruptor has been triggered (typically on Ctrl+C), so that scrcpy does
- * not hang on exit while the question is pending.
- *
- * Read from the file descriptor rather than from the FILE*: stdio could buffer
- * more than one line, and the extra bytes would be invisible to poll().
- *
- * Anything typed after the first newline is discarded, so that a multi-line
- * paste does not answer several questions at once.
- *
- * Return false on interruption, end of file or error.
- */
-static bool
-sc_adb_read_line_intr(struct sc_intr *intr, char *buf, size_t size) {
-    assert(size > 0);
-
-    size_t len = 0;
-
-    for (;;) {
-        if (sc_intr_is_interrupted(intr)) {
-            return false;
-        }
-
-        struct pollfd pfd = {
-            .fd = STDIN_FILENO,
-            .events = POLLIN,
-        };
-
-        int r = poll(&pfd, 1, 100);
-        if (r < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-
-        if (r == 0) {
-            // Timeout, re-check the interruptor
-            continue;
-        }
-
-        ssize_t n = read(STDIN_FILENO, buf + len, size - len - 1);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-
-        if (n == 0) {
-            // EOF (Ctrl+D)
-            return false;
-        }
-
-        len += n;
-        buf[len] = '\0';
-
-        char *newline = memchr(buf, '\n', len);
-        if (newline) {
-            // Ignore anything typed after the end of the line
-            *newline = '\0';
-            return true;
-        }
-
-        if (len == size - 1) {
-            // The line does not fit: return it truncated, it will be rejected
-            // as an invalid answer
-            return true;
-        }
-    }
-}
-
 static bool
 sc_adb_prompt_device(struct sc_intr *intr, struct sc_adb_device *devices,
                      size_t count, size_t *idx_out) {
     // Map the number displayed to the user to an index in devices[]
-    size_t *matches = malloc(count * sizeof(*matches));
+    size_t *matches = calloc(count, sizeof(*matches));
     if (!matches) {
         LOG_OOM();
         return false;
@@ -750,69 +634,23 @@ sc_adb_prompt_device(struct sc_intr *intr, struct sc_adb_device *devices,
                 i + 1, type, d->serial, d->state, d->model ? d->model : "");
     }
 
-    bool ok = false;
-    char buf[256];
-
-    for (;;) {
-        fprintf(stderr, "Select a device [1-%" SC_PRIsizet "] "
-                        "(or 'q' to quit): ", nr_matches);
-        fflush(stderr);
-
-        if (!sc_adb_read_line_intr(intr, buf, sizeof(buf))) {
-            // Interrupted, EOF (Ctrl+D) or error
-            fprintf(stderr, "\n");
-            break;
-        }
-
-        char *line = buf;
-        while (*line == ' ' || *line == '\t') {
-            ++line;
-        }
-
-        if (*line == 'q' || *line == 'Q') {
-            break;
-        }
-
-        char *endptr;
-        errno = 0;
-        long value = strtol(line, &endptr, 10);
-
-        // Accept only a whole number, optionally surrounded by blanks
-        bool is_number = endptr != line && !errno;
-        if (is_number) {
-            while (*endptr == ' ' || *endptr == '\t' || *endptr == '\r'
-                    || *endptr == '\n') {
-                ++endptr;
-            }
-            is_number = *endptr == '\0';
-        }
-
-        if (!is_number || value < 1 || (size_t) value > nr_matches) {
-            if (*line != '\r' && *line != '\n' && *line != '\0') {
-                // Stay quiet if the user just pressed Enter
-                fprintf(stderr, "Invalid selection, expected a number between "
-                                "1 and %" SC_PRIsizet "\n", nr_matches);
-            }
-            continue;
-        }
-
-        // Keep only the device the user picked as selected, so that it is the
-        // one marked in the device list logged afterwards
-        size_t sel_idx = matches[value - 1];
-        for (size_t i = 0; i < count; ++i) {
-            devices[i].selected = i == sel_idx;
-        }
-
-        *idx_out = sel_idx;
-        ok = true;
-        break;
+    size_t answer = 0;
+    if (!sc_prompt_select_index(intr, "device", nr_matches, &answer)) {
+        free(matches);
+        return false;
     }
 
-    free(matches);
-    return ok;
-}
+    // Keep only the device the user picked as selected, so that it is the one
+    // marked in the device list logged afterwards
+    size_t sel_idx = matches[answer];
+    for (size_t i = 0; i < count; ++i) {
+        devices[i].selected = i == sel_idx;
+    }
 
-#endif
+    *idx_out = sel_idx;
+    free(matches);
+    return true;
+}
 
 bool
 sc_adb_select_device(struct sc_intr *intr,
@@ -860,7 +698,7 @@ sc_adb_select_device(struct sc_intr *intr,
         return false;
     }
 
-    if (sel_count > 1 && sc_adb_can_prompt()) {
+    if (sel_count > 1 && sc_prompt_is_available()) {
         sc_adb_log_multiple(SC_LOG_LEVEL_INFO, selector, sel_count);
 
         if (!sc_adb_prompt_device(intr, vec.data, vec.size, &sel_idx)) {

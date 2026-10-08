@@ -62,6 +62,7 @@ src = [
     'src/util/net_intr.c',
     'src/util/process.c',
     'src/util/process_intr.c',
+    'src/util/prompt.c',
     'src/util/rand.c',
     'src/util/sdl.c',
     'src/util/strbuf.c',
