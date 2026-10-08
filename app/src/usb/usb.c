@@ -1,8 +1,11 @@
 #include "usb.h"
 
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "util/log.h"
+#include "util/prompt.h"
 #include "util/vector.h"
 
 struct sc_vec_usb_devices SC_VECTOR(struct sc_usb_device);
@@ -169,6 +172,71 @@ sc_usb_devices_log(enum sc_log_level level, struct sc_usb_device *devices,
     }
 }
 
+static void
+sc_usb_log_multiple(enum sc_log_level level, const char *serial,
+                    size_t sel_count) {
+    if (serial) {
+        LOG(level, "Multiple (%" SC_PRIsizet ") USB devices with serial %s:",
+            sel_count, serial);
+    } else {
+        LOG(level, "Multiple (%" SC_PRIsizet ") USB devices:", sel_count);
+    }
+}
+
+/**
+ * Interactive device selection
+ *
+ * When several devices match and the standard input is a terminal, prompt the
+ * user to pick one instead of failing.
+ *
+ * There is no interruptor here: this runs before the event loop is started, so
+ * nothing else could report that scrcpy must quit.
+ */
+static bool
+sc_usb_prompt_device(struct sc_usb_device *devices, size_t count,
+                     size_t *idx_out) {
+    // Map the number displayed to the user to an index in devices[]
+    size_t *matches = calloc(count, sizeof(*matches));
+    if (!matches) {
+        LOG_OOM();
+        return false;
+    }
+
+    size_t nr_matches = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (devices[i].selected) {
+            matches[nr_matches++] = i;
+        }
+    }
+
+    assert(nr_matches > 1);
+
+    for (size_t i = 0; i < nr_matches; ++i) {
+        struct sc_usb_device *d = &devices[matches[i]];
+        // Convert uint16_t to unsigned because PRIx16 may not exist on Windows
+        fprintf(stderr, "    %2" SC_PRIsizet ". %-18s (%04x:%04x)  %s %s\n",
+                i + 1, d->serial, (unsigned) d->vid, (unsigned) d->pid,
+                d->manufacturer, d->product);
+    }
+
+    size_t answer = 0;
+    if (!sc_prompt_select_index(NULL, "device", nr_matches, &answer)) {
+        free(matches);
+        return false;
+    }
+
+    // Keep only the device the user picked as selected, so that it is the one
+    // marked in the device list logged afterwards
+    size_t sel_idx = matches[answer];
+    for (size_t i = 0; i < count; ++i) {
+        devices[i].selected = i == sel_idx;
+    }
+
+    *idx_out = sel_idx;
+    free(matches);
+    return true;
+}
+
 bool
 sc_usb_select_device(struct sc_usb *usb, const char *serial,
                      struct sc_usb_device *out_device) {
@@ -197,13 +265,21 @@ sc_usb_select_device(struct sc_usb *usb, const char *serial,
         return false;
     }
 
-    if (sel_count > 1) {
-        if (serial) {
-            LOGE("Multiple (%" SC_PRIsizet ") USB devices with serial %s:",
-                 sel_count, serial);
-        } else {
-            LOGE("Multiple (%" SC_PRIsizet ") USB devices:", sel_count);
+    if (sel_count > 1 && sc_prompt_is_available()) {
+        sc_usb_log_multiple(SC_LOG_LEVEL_INFO, serial, sel_count);
+
+        if (!sc_usb_prompt_device(vec.data, vec.size, &sel_idx)) {
+            LOGE("No device selected");
+            sc_usb_devices_destroy(&vec);
+            return false;
         }
+
+        // A single device is now selected, and sel_idx points to it
+        sel_count = 1;
+    }
+
+    if (sel_count > 1) {
+        sc_usb_log_multiple(SC_LOG_LEVEL_ERROR, serial, sel_count);
         sc_usb_devices_log(SC_LOG_LEVEL_ERROR, vec.data, vec.size);
         LOGE("Select a device via -s (--serial)");
         sc_usb_devices_destroy(&vec);

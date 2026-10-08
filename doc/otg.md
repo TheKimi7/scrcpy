@@ -23,9 +23,22 @@ To enable OTG mode:
 
 ```bash
 scrcpy --otg
-# Pass the serial if several USB devices are available
+# Pass the serial to select a device upfront
 scrcpy --otg -s 0123456789abcdef
 ```
+
+If several USB devices are available and scrcpy is started from a terminal, it
+lists them and asks which one to use:
+
+```
+INFO: Multiple (2) USB devices:
+     1. 0123456789abcdef   (18d1:4ee7)  Google Pixel_8
+     2. fedcba9876543210   (18d1:4ee7)  Samsung Galaxy_S24
+Select a device [1-2] (or 'q' to quit):
+```
+
+Pass the serial to skip the question, or when scrcpy is not started from a
+terminal (so it cannot ask).
 
 The serial may also be provided via the environment variable `ANDROID_SERIAL`
 (see [connection](connection.md#selection)).
