@@ -5,8 +5,18 @@
 If exactly one device is connected (i.e. listed by `adb devices`), then it is
 automatically selected.
 
-However, if there are multiple devices connected, you must specify the one to
-use in one of 4 ways:
+If multiple devices are connected and scrcpy is started from a terminal, it
+lists the matching devices and asks which one to use:
+
+```
+INFO: Multiple (2) ADB devices:
+     1.   (usb)  0123456789abcdef          device  Pixel_8
+     2.   (usb)  fedcba9876543210          device  Galaxy_S24
+Select a device [1-2] (or 'q' to quit):
+```
+
+To select a device upfront, or when scrcpy is not started from a terminal (so
+it cannot ask), specify the one to use in one of 4 ways:
  - by its serial:
    ```bash
    scrcpy --serial=0123456789abcdef
