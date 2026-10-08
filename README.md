@@ -2,9 +2,14 @@
 > **This is a modified fork of [scrcpy](https://github.com/Genymobile/scrcpy),
 not the official project.**
 >
-> Changes compared to upstream v5.0.1:
-> - `app/src/adb/adb.c`, `doc/connection.md` — when several devices match, ask
->   interactively which one to use instead of exiting and requiring `-s`.
+> Changed compared to upstream v5.0.1: when several devices match, scrcpy lists
+> them and asks which one to use instead of exiting and requiring `-s`. This
+> applies to the ADB device list and to OTG mode. Windows keeps the upstream
+> behavior.
+>
+> Modified files: `app/meson.build`, `app/src/adb/adb.c`, `app/src/usb/usb.c`,
+> `app/src/util/prompt.c` (added), `app/src/util/prompt.h` (added),
+> `doc/connection.md`, `doc/otg.md`.
 >
 > For the official, unmodified project, see
 > <https://github.com/Genymobile/scrcpy>.
