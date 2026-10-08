@@ -1,3 +1,14 @@
+> [!NOTE]
+> **This is a modified fork of [scrcpy](https://github.com/Genymobile/scrcpy),
+not the official project.**
+>
+> Changes compared to upstream v5.0.1:
+> - `app/src/adb/adb.c`, `doc/connection.md` — when several devices match, ask
+>   interactively which one to use instead of exiting and requiring `-s`.
+>
+> For the official, unmodified project, see
+> <https://github.com/Genymobile/scrcpy>.
+
 > [!WARNING]
 > **This GitHub repo (<https://github.com/Genymobile/scrcpy>) is the only official
 source for the project. Do not download releases from random websites, even if
@@ -224,6 +235,9 @@ work][donate]:
 
     Copyright (C) 2018 Genymobile
     Copyright (C) 2018-2026 Romain Vimont
+
+    Modifications in this fork:
+    Copyright (C) 2026 TheKimi7
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
